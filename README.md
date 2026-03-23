@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.6.7
+- Added an **Auto-generate after AI response** mirror toggle inside **Inject Mode** so you can enable and verify automatic inject processing without switching tabs.
+- Clarified Inject Mode copy/tooltips to make it explicit that automatic inject processing requires both **Enable inject mode** and **Auto-generate**.
+- Documented where persistent QIG data is stored and why changing only the inject prompt template should not wipe contextual filters or character settings by itself.
+
 ## What's New in v1.6.5
 - Fixed a palette `Inject` mode bug where a bad image tag/prompt from the last AI reply could get reused over and over, reopening **Edit LLM Generated Prompt** with stale content.
 - Palette `Inject` now treats extracted tags as one-time inputs by default, so repeated clicks fall back to fresh tag generation instead of looping old prompts.
@@ -172,11 +177,11 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Batch Count** | Number of images to generate (1-10) |
 | **Sequential Seeds** | Generate batch with incrementing seeds (seed, seed+1, seed+2...) |
 | **Size** | Image dimensions (custom + NovelAI presets) |
-| **Auto-generate** | Generate after each AI response |
+| **Auto-generate** | Generate after each AI response. Inject Mode auto-processing also uses this same toggle |
 | **Auto-insert** | Skip popup and insert images directly into chat |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
 | **LLM Override** | Use a separate OpenAI-compatible API for image prompt generation (URL, key, model, temperature, max tokens, system prompt) |
-| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts custom/legacy image tags from AI response or reasoning |
+| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts custom/legacy image tags from AI response or reasoning. For automatic inject processing, enable both Inject Mode and Auto-generate |
 
 ---
 
@@ -256,6 +261,12 @@ Save and load provider configurations per-provider:
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
+
+Most persistent QIG data also follows the same pattern: browser `localStorage` first, with key stores mirrored into SillyTavern extension settings as a backup so they can be restored if `localStorage` is missing or malformed.
+
+Changing only the inject prompt template should not wipe contextual filters or character settings by itself. If filters/settings disappear after an older import, rollback, or extension state restore, the older saved extension payload may have overwritten the backup copy too.
+
+Use **Export** before major changes if you want a portable backup of profiles, presets, contextual filters, and character settings.
 
 If you save with an existing profile name, QIG prompts before overwriting.
 
@@ -612,6 +623,7 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 | Setting | Description |
 |---------|-------------|
 | **Enable inject mode** | Master toggle |
+| **Auto-generate after AI response** | Required for automatic inject processing. This is the same shared toggle shown in Direct Mode |
 | **Tag name** | First-class paired tag name (default `image`). Change this if your preset/model eats `<image>` inside reasoning or `<think>` blocks |
 | **Inject prompt template** | The instruction injected into chat completion. Supports `{{char}}`, `{{user}}` |
 | **Extraction regex** | Regex with capture groups for the image prompt. Default matches your paired tag, `<image>...</image>`, and legacy `<pic prompt="...">` |
@@ -619,6 +631,11 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 | **Depth** | Depth from end of prompt array (when using At Depth) |
 | **Tag handling** | Replace tag with image, insert after message, or create new message |
 | **Auto-clean** | Remove detected image tags from the stored/displayed message and reasoning text |
+
+### Troubleshooting
+
+- If QIG injects the prompt but does not auto-generate, check **Auto-generate after AI response** as well as **Enable inject mode**. Inject auto-processing only runs when both are enabled.
+- The Inject tab now mirrors the same `Auto-generate` toggle used in Direct Mode so you do not have to switch tabs to verify it.
 
 ### Why use this?
 

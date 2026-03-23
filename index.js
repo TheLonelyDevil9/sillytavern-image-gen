@@ -7721,6 +7721,32 @@ function bindCheckbox(id, key) {
     return bind(id, key, false, true);
 }
 
+function syncCheckboxGroup(ids, checked) {
+    ids.forEach((id) => {
+        const el = getOrCacheElement(id);
+        if (el) el.checked = checked;
+    });
+}
+
+function setAutoGenerateEnabled(checked) {
+    const normalized = !!checked;
+    getSettings().autoGenerate = normalized;
+    syncCheckboxGroup(["qig-auto-generate", "qig-inject-auto-generate"], normalized);
+    if (!normalized && _autoGenTimeout) {
+        clearTimeout(_autoGenTimeout);
+        _autoGenTimeout = null;
+    }
+}
+
+function bindAutoGenerateCheckbox(id) {
+    const el = getOrCacheElement(id);
+    if (!el) return;
+    el.onchange = (e) => {
+        setAutoGenerateEnabled(e.target.checked);
+        saveSettingsDebounced();
+    };
+}
+
 function modelSelect(provider, settingKey, currentVal) {
     const models = PROVIDER_MODELS[provider];
     if (!models) return `<input id="qig-${settingKey}" type="text" value="${escapeHtml(currentVal ?? "")}" placeholder="Model ID">`;
@@ -8406,7 +8432,7 @@ function createUI() {
                             Direct Mode</button>
                         <button class="qig-mode-tab menu_button" data-tab="inject"
                             style="flex:1;border-radius:0 4px 4px 0;padding:4px 8px;font-size:12px;"
-                            title="AI writes image descriptions in its responses, images auto-generate from them">
+                            title="AI writes image descriptions in its responses; auto-generate from them when Auto-generate is enabled">
                             Inject Mode</button>
                     </div>
 
@@ -8425,12 +8451,17 @@ function createUI() {
 
                     <!-- Inject tab -->
                     <div id="qig-tab-inject" class="qig-tab-panel" style="display:none;">
-                        <small style="opacity:0.7;">Let the RP AI describe scenes with image tags, then auto-generate images from them</small>
+                        <small style="opacity:0.7;">Let the RP AI describe scenes with image tags, then auto-generate images from them when both toggles below are enabled</small>
                         <label class="checkbox_label" style="margin-top:6px;">
                             <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
                             <span>Enable inject mode</span>
                         </label>
                         <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
+                            <label class="checkbox_label">
+                                <input id="qig-inject-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
+                                <span>Auto-generate after AI response</span>
+                            </label>
+                            <small style="opacity:0.6;font-size:10px;">Required for automatic inject processing. This mirrors the same Auto-generate setting shown in Direct Mode.</small>
                             <label>Tag name</label>
                             <input id="qig-inject-tag-name" type="text" value="${esc(getInjectTagName(s))}" placeholder="image" style="width:100%;text-transform:lowercase;">
                             <small style="opacity:0.6;font-size:10px;">Preview: <code id="qig-inject-tag-preview">${esc(getInjectTagPreview(getInjectTagName(s)))}</code>. Change this if your preset/model tends to swallow &lt;image&gt; tags inside reasoning.</small>
@@ -9108,12 +9139,9 @@ function createUI() {
         saveSettingsDebounced();
         document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
     };
-    bind("qig-auto-generate", "autoGenerate", false, true, (checked) => {
-        if (!checked && _autoGenTimeout) {
-            clearTimeout(_autoGenTimeout);
-            _autoGenTimeout = null;
-        }
-    });
+    bindAutoGenerateCheckbox("qig-auto-generate");
+    bindAutoGenerateCheckbox("qig-inject-auto-generate");
+    syncCheckboxGroup(["qig-auto-generate", "qig-inject-auto-generate"], !!getSettings().autoGenerate);
     bindCheckbox("qig-auto-insert", "autoInsert");
     const hiddenReplyEl = document.getElementById("qig-insert-hidden-reply");
     bindCheckbox("qig-insert-hidden-reply", "insertAsHiddenReply");
