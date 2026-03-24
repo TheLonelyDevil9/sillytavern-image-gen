@@ -10372,7 +10372,7 @@ async function generateImageInjectPalette() {
             }
         }
         endGeneration();
-        if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
+        _paletteInjectActive = false;
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
     }
