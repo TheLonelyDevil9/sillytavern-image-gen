@@ -4310,6 +4310,7 @@ async function genProxy(prompt, negative, s, signal) {
 
     const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
     const proxySeed = resolveRandomSeed(s.proxySeed, s);
+    log(`Proxy mode: isChatProxy=${isChatProxy}, refImages=${s.proxyRefImages?.length || 0}, url=${s.proxyUrl.substring(0, 60)}`);
 
     if (isChatProxy) {
         const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
@@ -4324,9 +4325,14 @@ async function genProxy(prompt, negative, s, signal) {
         const content = [];
         const hasRefImages = s.proxyRefImages?.length > 0;
         if (hasRefImages) {
+            log(`Attaching ${s.proxyRefImages.length} reference image(s) to chat request`);
             for (const img of s.proxyRefImages) {
+                const isDataUrl = img.startsWith('data:');
+                log(`  ref image: ${isDataUrl ? img.substring(0, 40) + '...' : img.substring(0, 80)} (${isDataUrl ? Math.round(img.length / 1024) + 'KB' : 'URL'})`);
                 content.push({ type: "image_url", image_url: { url: img } });
             }
+        } else {
+            log(`No reference images found in proxyRefImages`);
         }
         const refPrefix = hasRefImages ? `Look at the reference image(s) provided. Match their style, composition, and visual characteristics. Generate a new image: ` : `Generate an image: `;
         content.push({ type: "text", text: `${refPrefix}${prompt}${negPrompt}${extraInstr}` });
