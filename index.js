@@ -5065,6 +5065,23 @@ function displayImage(entryOrUrl, skipGallery) {
             const imgSrc = document.getElementById("qig-result-img")?.src;
             if (!imgSrc) return;
             const s = getSettings();
+
+            // Add to nanobanana references if that's the current provider
+            if (s.provider === "nanobanana") {
+                if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
+                if (s.nanobananaRefImages.length >= 15) {
+                    toastr.warning("Maximum 15 reference images reached");
+                    return;
+                }
+                s.nanobananaRefImages.push(imgSrc);
+                saveSettingsDebounced();
+                renderNanobananaRefImages();
+                popup.style.display = "none";
+                toastr.success("Image added to Nanobanana reference images");
+                return;
+            }
+
+            // Otherwise use for local img2img
             s.localRefImage = imgSrc;
             saveSettingsDebounced();
             const preview = document.getElementById("qig-local-ref-preview");
