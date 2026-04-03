@@ -10284,7 +10284,9 @@ async function generateImageInjectPalette() {
         log(`Palette inject: Found ${matches.length} image tag(s), generating images...`);
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
-        const sceneTextForFilters = getMessages() || "";
+        // Build enriched scene context with character names for filter matching
+        const baseSceneText = getMessages() || "";
+        const sceneTextForFilters = enrichSceneTextForFilters(baseSceneText, "Palette inject filters");
         for (const extractedPrompt of matches) {
             checkAborted(cancelCheckpoint);
             showStatus(`🖼️ Generating palette-inject image...`);
@@ -10325,8 +10327,8 @@ async function generateImageInjectPalette() {
             }
 
             const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-                matchText: sceneTextForFilters || prompt,
-                llmSceneText: sceneTextForFilters || extractedPrompt,
+                matchText: sceneTextForFilters,
+                llmSceneText: sceneTextForFilters,
                 signal: currentAbortController?.signal,
             });
             checkAborted(cancelCheckpoint);
