@@ -4308,12 +4308,14 @@ async function genProxy(prompt, negative, s, signal) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
-    const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
+    const hasRefImages = s.proxyRefImages?.length > 0;
+    const isChatProxy = hasRefImages || (s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images"));
     const proxySeed = resolveRandomSeed(s.proxySeed, s);
     log(`Proxy mode: isChatProxy=${isChatProxy}, refImages=${s.proxyRefImages?.length || 0}, url=${s.proxyUrl.substring(0, 60)}`);
 
     if (isChatProxy) {
-        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
+        // Derive chat completions URL from any /v1 URL
+        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "").replace(/\/images\/generations$/i, "").replace(/\/images$/i, "");
         const chatUrl = /\/chat\/completions$/i.test(proxyUrlBase)
             ? proxyUrlBase
             : proxyUrlBase + "/chat/completions";
