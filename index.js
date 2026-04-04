@@ -9,7 +9,7 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret, getRequestHeaders;
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, generateRaw, secret_state, rotateSecret, getRequestHeaders;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 
 const DEFAULT_INJECT_TAG_NAME = "image";
@@ -115,6 +115,7 @@ const defaultSettings = {
     enableParagraphPicker: false,
     batchCount: 1,
     sequentialSeeds: false,
+    lastLoadedPresetId: "",
     // Reverse Proxy
     proxyUrl: "",
     proxyKey: "",
@@ -397,6 +398,7 @@ let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
 let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
+let _palettePresetMenuCleanup = null;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const INTERNAL_LLM_AUTOGEN_GRACE_MS = 2000;
@@ -536,22 +538,72 @@ function shouldSuppressAutoGenerateFromInternalLLM(messageIndex) {
     return false;
 }
 
-async function callInternalQuietPrompt(instruction, { signal = null, quietName, label = "internal quiet prompt" } = {}) {
-    const requestLabel = String(label || quietName || "internal quiet prompt");
+function buildPrefillFallbackInstruction(prefill) {
+    const resolvedPrefill = String(prefill || "");
+    if (!resolvedPrefill.trim()) return "";
+    return `\n\nIMPORTANT: Continue the output directly from this exact prefix. Treat it as already-written response text, do not quote it, and do not restart from the scene.\nPrefix:\n${resolvedPrefill}`;
+}
+
+async function runInternalQuietPromptRequest(instruction, {
+    signal = null,
+    quietName,
+    requestLabel = "internal quiet prompt",
+    prefill = "",
+} = {}) {
+    const quietPrompt = `${instruction}${buildPrefillFallbackInstruction(prefill)}`;
     const quietOptions = {
+        quietPrompt,
         skipWIAN: true,
         quietName: quietName || `ImageGen_${Date.now()}`,
         quietToLoud: false,
     };
 
+    try {
+        return await runAbortableTask(() => generateQuietPrompt(quietOptions), signal);
+    } catch (e) {
+        if (e.name === "AbortError") throw e;
+        log(`${requestLabel}: generateQuietPrompt with options failed: ${e.message}, using simple call`);
+        return await runAbortableTask(() => generateQuietPrompt({ quietPrompt, quietToLoud: false }), signal);
+    }
+}
+
+async function callInternalQuietPrompt(instruction, { signal = null, quietName, label = "internal quiet prompt", prefill = "" } = {}) {
+    const requestLabel = String(label || quietName || "internal quiet prompt");
+    return await runWithInternalLLMRequest(requestLabel, async () =>
+        await runInternalQuietPromptRequest(instruction, { signal, quietName, requestLabel, prefill })
+    );
+}
+
+async function callInternalStandaloneLLM(instruction, {
+    signal = null,
+    quietName,
+    label = "internal standalone prompt",
+    prefill = "",
+} = {}) {
+    const requestLabel = String(label || quietName || "internal standalone prompt");
+    const resolvedPrefill = String(prefill || "");
+
     return await runWithInternalLLMRequest(requestLabel, async () => {
-        try {
-            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
-        } catch (e) {
-            if (e.name === "AbortError") throw e;
-            log(`${requestLabel}: generateQuietPrompt with options failed: ${e.message}, using simple call`);
-            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
+        if (typeof generateRaw === "function") {
+            try {
+                return await runAbortableTask(() => generateRaw({
+                    prompt: instruction,
+                    quietToLoud: false,
+                    trimNames: false,
+                    prefill: resolvedPrefill,
+                }), signal);
+            } catch (e) {
+                if (e.name === "AbortError") throw e;
+                log(`${requestLabel}: generateRaw failed: ${e.message}, using quiet prompt fallback`);
+            }
         }
+
+        return await runInternalQuietPromptRequest(instruction, {
+            signal,
+            quietName,
+            requestLabel: `${requestLabel} fallback`,
+            prefill: resolvedPrefill,
+        });
     });
 }
 
@@ -1367,7 +1419,7 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
         } else {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
-            paletteBtn.title = "Generate Image";
+            paletteBtn.title = "Generate Image (right-click for presets)";
             paletteBtn.style.opacity = "0.7";
         }
     }
@@ -1385,6 +1437,7 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
 }
 
 function beginGeneration({ disableGenerateButton = false, clearPendingAuto = false } = {}) {
+    closePalettePresetMenu();
     if (clearPendingAuto && _autoGenTimeout) {
         clearTimeout(_autoGenTimeout);
         _autoGenTimeout = null;
@@ -1531,6 +1584,8 @@ async function loadSettings() {
         log(`Restored ${restoredCount} preset store(s) from server backup`);
         toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
     }
+    ensureGenerationPresetIds({ persist: true });
+    syncActiveGenerationPresetSetting({ persist: true });
     ensureFilterPoolsState({ persist: true });
     ensurePromptReplacementState({ persist: true });
 }
@@ -3011,7 +3066,7 @@ function findSecretKeyForId(secretId) {
     return null;
 }
 
-async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
+async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { assistantPrefill = "" } = {}) {
     const s = getSettings();
     let CMRS = null;
     try {
@@ -3022,16 +3077,21 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
     if (!CMRS || !s.llmOverrideProfileId) {
         // Fallback: use main chat AI via generateQuietPrompt
         log("LLM Override: No Connection Manager or profile, falling back to main AI");
-        return await callInternalQuietPrompt(instruction, {
+        const fallbackOptions = {
             signal,
             quietName: `ImageGen_${Date.now()}`,
             label: "LLM override fallback request",
-        });
+            prefill: assistantPrefill,
+        };
+        return assistantPrefill
+            ? await callInternalStandaloneLLM(instruction, fallbackOptions)
+            : await callInternalQuietPrompt(instruction, fallbackOptions);
     }
 
     const messages = [];
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: instruction });
+    if (assistantPrefill) messages.push({ role: "assistant", content: assistantPrefill });
 
     const requestedPreset = s.llmOverridePreset || "";
     log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${requestedPreset || "profile default"})`);
@@ -3081,11 +3141,15 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
         if (e.name === "AbortError") throw e;
         log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
         log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
-        return await callInternalQuietPrompt(instruction, {
+        const recoveryOptions = {
             signal,
             quietName: `ImageGen_${Date.now()}`,
             label: "LLM override recovery request",
-        });
+            prefill: assistantPrefill,
+        };
+        return assistantPrefill
+            ? await callInternalStandaloneLLM(instruction, recoveryOptions)
+            : await callInternalQuietPrompt(instruction, recoveryOptions);
     } finally {
         // Restore original secret
         if (previousSecretId && secretKey && rotateSecret) {
@@ -3150,6 +3214,40 @@ async function populatePresetList(selectId, selectedPreset) {
     }
 }
 
+function getResolvedLLMPrefill(settings = getSettings()) {
+    return resolvePrompt(settings?.llmPrefill ?? "");
+}
+
+function promptIncludesName(text, name) {
+    const haystack = String(text || "").toLowerCase();
+    const needle = String(name || "").trim().toLowerCase();
+    return !!needle && haystack.includes(needle);
+}
+
+function shouldStripPrefillFromLLMResult(prefill, profile) {
+    const trimmedPrefill = String(prefill || "").trim();
+    if (!trimmedPrefill) return false;
+    const protectedNames = uniqueStringList([...(profile?.charNames || []), profile?.userName].filter(Boolean));
+    if (protectedNames.some(name => promptIncludesName(trimmedPrefill, name))) {
+        return false;
+    }
+    return /(^|\b)(image prompt|prompt|tags?|description|answer)\b/i.test(trimmedPrefill) || /[:>\-\]]\s*$/.test(trimmedPrefill);
+}
+
+function mergeMeaningfulPrefillIntoLLMResult(result, prefill, profile) {
+    const baseResult = String(result || "").trim();
+    const rawPrefill = String(prefill || "");
+    const trimmedPrefill = rawPrefill.trim();
+    if (!baseResult || !trimmedPrefill) return baseResult;
+    if (shouldStripPrefillFromLLMResult(rawPrefill, profile)) return baseResult;
+    const activeNames = uniqueStringList(profile?.charNames || []);
+    if (!activeNames.length) return baseResult;
+    if (activeNames.some(name => promptIncludesName(baseResult, name))) return baseResult;
+    if (!activeNames.some(name => promptIncludesName(trimmedPrefill, name))) return baseResult;
+    const joiner = /[\s(,:-]$/.test(rawPrefill) ? "" : ", ";
+    return `${rawPrefill}${joiner}${baseResult}`.trim();
+}
+
 async function generateLLMPrompt(s, basePrompt, signal) {
     if (!s.useLLMPrompt) return basePrompt;
 
@@ -3171,6 +3269,9 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         const userPersona = profile.userDesc || "";
         const scenario = profile.charScenarioCombined || "";
         const tags = profile.charTagsCombined || "";
+        const activeCharacterNames = uniqueStringList(profile.charNames || []);
+        const activeCharacterList = activeCharacterNames.join(", ");
+        const resolvedPrefill = getResolvedLLMPrefill(s);
 
         const skinTones = [];
         const charSkin = charDesc.match(skinPattern);
@@ -3185,6 +3286,12 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
 
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
+        const exactNameRequirement = activeCharacterNames.length
+            ? `\n- Preserve and include these exact active character name${activeCharacterNames.length === 1 ? "" : "s"} when they are the subject of the scene: ${activeCharacterList}`
+            : "";
+        const exactNameBlock = activeCharacterNames.length
+            ? `\nACTIVE CHARACTER NAMES (use these exact spellings when applicable): ${activeCharacterList}`
+            : "";
 
         const isNatural = s.llmPromptStyle === "natural";
         const wantsCustom = s.llmPromptStyle === "custom";
@@ -3216,6 +3323,9 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             if (skinEnforce) {
                 instruction += skinEnforce;
             }
+            if (exactNameRequirement) {
+                instruction += `\n\nACTIVE NAME REQUIREMENT:${exactNameRequirement}`;
+            }
         } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
             // Fall through to default tags style below
@@ -3243,11 +3353,12 @@ CRITICAL INSTRUCTIONS:
 [Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
-${appearanceContext}
+${appearanceContext}${exactNameBlock}
 ${isMultiMessage ? "SCENE CONTEXT (multiple messages):\n" : "CURRENT SCENE: "}${basePrompt}
 
 Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
+- Use the exact active character names when the scene/card identifies them${activeCharacterNames.length ? ` (${activeCharacterList})` : ""}
 - If from known media/franchise, include the series name and character's canonical appearance
 - Their poses, expressions, and body language
 - The setting/background
@@ -3301,10 +3412,10 @@ WRONG (DO NOT do this):
 
 Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" : "scene: "}${basePrompt}
 
-Character info: ${appearanceContext}
+Character info: ${appearanceContext}${exactNameBlock}
 
 Required tag categories:
-- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized)
+- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists)
 - Physical traits (hair, eyes, body, skin)
 - Clothing and accessories
 - Pose and expression
@@ -3338,23 +3449,23 @@ Tags:`;
         log(`Request ID: ${uniqueId}`);
 
         // Build the full instruction with optional prefill
-        const prefillHint = s.llmPrefill ? `\n\nStart your response with: "${s.llmPrefill}"` : "";
+        const prefillHint = resolvedPrefill ? `\n\nContinue the output from this exact prefix if your backend supports prefills:\n${resolvedPrefill}` : "";
         instructionWithEntropy += prefillHint;
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
 
-        // Use generateQuietPrompt with options to bypass caching
-        // skipWIAN: true - skip World Info and Author's Note (can cause cache hits)
-        // quietName: unique name per request to prevent prompt caching
+        // Prefer a standalone request path so the helper prompt can use prefill and avoid ambient chat leakage.
+        // Fallback to the quiet prompt path if standalone generation is unavailable.
         let llmPrompt;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
-            llmPrompt = await callOverrideLLM(instructionWithEntropy, "", signal);
+            llmPrompt = await callOverrideLLM(instructionWithEntropy, "", signal, { assistantPrefill: resolvedPrefill });
         } else {
-            llmPrompt = await callInternalQuietPrompt(instructionWithEntropy, {
+            llmPrompt = await callInternalStandaloneLLM(instructionWithEntropy, {
                 signal,
                 quietName: `ImageGen_${timestamp}`,
                 label: "image prompt generation request",
+                prefill: resolvedPrefill,
             });
         }
 
@@ -3379,10 +3490,11 @@ Tags:`;
             return basePrompt;
         }
 
-        // Remove prefill text if it appears at start of response
-        if (s.llmPrefill && cleaned.toLowerCase().startsWith(s.llmPrefill.toLowerCase())) {
-            cleaned = cleaned.substring(s.llmPrefill.length).trim();
+        // Strip only meta-label prefills; preserve character-name prefills so filters can still key off them.
+        if (resolvedPrefill && shouldStripPrefillFromLLMResult(resolvedPrefill, profile) && cleaned.toLowerCase().startsWith(resolvedPrefill.toLowerCase())) {
+            cleaned = cleaned.substring(resolvedPrefill.length).trim();
         }
+        cleaned = mergeMeaningfulPrefillIntoLLMResult(cleaned, resolvedPrefill, profile);
 
         // CRITICAL: Check if response looks like roleplay dialogue (indicates LLM used chat context)
         // Roleplay dialogue typically has dialogue markers, quotation marks, or narrative text
@@ -8242,12 +8354,61 @@ function deleteSelectedComfyWorkflowPreset() {
 // === Generation Presets ===
 const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse"];
 
+function saveGenerationPresetStore(errorMessage = "Failed to save preset. Browser storage may be full.") {
+    if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), errorMessage)) return false;
+    backupToSettings("qig_gen_presets", generationPresets);
+    return true;
+}
+
+function ensureGenerationPresetIds({ persist = false } = {}) {
+    if (!Array.isArray(generationPresets)) {
+        generationPresets = [];
+        return false;
+    }
+    let changed = false;
+    for (const preset of generationPresets) {
+        if (!preset || typeof preset !== "object") continue;
+        if (typeof preset.id === "string" && preset.id.trim()) continue;
+        preset.id = generateUUID();
+        changed = true;
+    }
+    if (changed && persist) {
+        saveGenerationPresetStore("Failed to migrate preset IDs. Browser storage may be full.");
+    }
+    return changed;
+}
+
+function getActiveGenerationPresetId() {
+    return String(getSettings()?.lastLoadedPresetId || "");
+}
+
+function syncActiveGenerationPresetSetting({ persist = false } = {}) {
+    const s = getSettings();
+    if (!s) return;
+    const activePresetId = String(s.lastLoadedPresetId || "");
+    if (!activePresetId) return;
+    if (generationPresets.some(preset => preset?.id === activePresetId)) return;
+    s.lastLoadedPresetId = "";
+    if (persist) saveSettingsDebounced();
+}
+
+function setActiveGenerationPresetId(presetId = "", { persist = true } = {}) {
+    const s = getSettings();
+    if (!s) return;
+    const nextId = String(presetId || "");
+    if (String(s.lastLoadedPresetId || "") !== nextId) {
+        s.lastLoadedPresetId = nextId;
+        if (persist) saveSettingsDebounced();
+    }
+    renderPresets();
+}
+
 function savePreset() {
     const name = prompt("Preset name:");
     if (!name) return;
     ensureFilterPoolsState();
     const s = getSettings();
-    const preset = { name };
+    const preset = { id: generateUUID(), name };
     PRESET_KEYS.forEach(k => preset[k] = s[k]);
     // Always include contextual filters snapshot in preset
     preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
@@ -8264,14 +8425,14 @@ function savePreset() {
     const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
-    if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to save preset. Browser storage may be full.")) return;
-    backupToSettings("qig_gen_presets", generationPresets);
+    if (!saveGenerationPresetStore()) return;
     renderPresets();
     showStatus(`💾 Saved preset: ${name}`);
     setTimeout(hideStatus, 2000);
 }
 
 function loadPreset(i) {
+    ensureGenerationPresetIds({ persist: true });
     const p = generationPresets[i];
     if (!p) return;
     const s = getSettings();
@@ -8310,16 +8471,23 @@ function loadPreset(i) {
     // Restore inject mode settings
     const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    s.lastLoadedPresetId = p.id || "";
     saveSettingsDebounced();
     refreshAllUI(s);
+    renderPresets();
+    closePalettePresetMenu();
     showStatus(`📂 Loaded preset: ${p.name}`);
     setTimeout(hideStatus, 2000);
 }
 
 function deletePreset(i) {
-    generationPresets.splice(i, 1);
-    if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to delete preset. Browser storage may be full.")) return;
-    backupToSettings("qig_gen_presets", generationPresets);
+    const removed = generationPresets.splice(i, 1)[0];
+    if (!saveGenerationPresetStore("Failed to delete preset. Browser storage may be full.")) return;
+    if (removed?.id && getActiveGenerationPresetId() === removed.id) {
+        setActiveGenerationPresetId("", { persist: true });
+    }
+    syncActiveGenerationPresetSetting({ persist: true });
+    closePalettePresetMenu();
     renderPresets();
 }
 
@@ -8328,6 +8496,8 @@ function clearPresets() {
         generationPresets = [];
         localStorage.removeItem("qig_gen_presets");
         backupToSettings("qig_gen_presets", generationPresets);
+        setActiveGenerationPresetId("", { persist: true });
+        closePalettePresetMenu();
         renderPresets();
     }
 }
@@ -8335,9 +8505,12 @@ function clearPresets() {
 function renderPresets() {
     const container = document.getElementById("qig-presets");
     if (!container) return;
+    ensureGenerationPresetIds({ persist: true });
+    syncActiveGenerationPresetSetting({ persist: true });
+    const activePresetId = getActiveGenerationPresetId();
     const html = generationPresets.map((p, i) =>
         `<span style="display:inline-flex;align-items:center;margin:2px;">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadPreset(${i})">${escapeHtml(p.name || "")}</button>` +
+        `<button class="menu_button ${p?.id === activePresetId ? "qig-preset-chip--active" : ""}" style="padding:2px 6px;font-size:10px;" onclick="loadPreset(${i})">${escapeHtml(p.name || "")}</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deletePreset(${i})">×</button></span>`
     ).join('');
     container.innerHTML = generationPresets.length > 0
@@ -8486,8 +8659,8 @@ function importSettings() {
             }
             if (data.generationPresets) {
                 generationPresets = data.generationPresets;
-                if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets))) throw new Error("Could not save imported presets. Browser storage may be full.");
-                backupToSettings("qig_gen_presets", generationPresets);
+                ensureGenerationPresetIds();
+                if (!saveGenerationPresetStore("Could not save imported presets. Browser storage may be full.")) throw new Error("Could not save imported presets. Browser storage may be full.");
             }
             if (data.charSettings) {
                 charSettings = data.charSettings;
@@ -8539,6 +8712,7 @@ function importSettings() {
                 if (!safeSetStorage("qig_active_prompt_replacement_ids_by_char", JSON.stringify(activePromptReplacementIdsByChar))) throw new Error("Could not save imported character prompt replacement map states. Browser storage may be full.");
                 backupToSettings("qig_active_prompt_replacement_ids_by_char", activePromptReplacementIdsByChar);
             }
+            syncActiveGenerationPresetSetting({ persist: true });
             ensureFilterPoolsState({ persist: true });
             ensurePromptReplacementState({ persist: true });
             renderTemplates();
@@ -10432,6 +10606,7 @@ function createUI() {
         saveSettingsDebounced();
         const btn = document.getElementById("qig-input-btn");
         if (e.target.checked) {
+            closePalettePresetMenu();
             if (btn) btn.style.display = "none";
         } else {
             if (btn) btn.style.display = "";
@@ -10608,6 +10783,101 @@ function createUI() {
     }
 }
 
+function closePalettePresetMenu() {
+    if (typeof _palettePresetMenuCleanup === "function") {
+        _palettePresetMenuCleanup();
+        _palettePresetMenuCleanup = null;
+    }
+}
+
+function showPalettePresetMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isGenerating) return;
+
+    closePalettePresetMenu();
+    ensureGenerationPresetIds({ persist: true });
+    syncActiveGenerationPresetSetting({ persist: true });
+
+    const anchor = document.getElementById("qig-input-btn");
+    const activePresetId = getActiveGenerationPresetId();
+    const menu = document.createElement("div");
+    menu.id = "qig-palette-preset-menu";
+    menu.className = "qig-palette-preset-menu";
+
+    const title = document.createElement("div");
+    title.className = "qig-palette-preset-menu__title";
+    title.textContent = "Generation Presets";
+    menu.appendChild(title);
+
+    if (!generationPresets.length) {
+        const emptyState = document.createElement("div");
+        emptyState.className = "qig-palette-preset-menu__empty";
+        emptyState.textContent = "No presets saved yet.";
+        menu.appendChild(emptyState);
+    } else {
+        for (const [index, preset] of generationPresets.entries()) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `menu_button qig-palette-preset-menu__item${preset?.id === activePresetId ? " qig-palette-preset-menu__item--active" : ""}`;
+            button.textContent = `${preset?.id === activePresetId ? "✓ " : ""}${preset?.name || `Preset ${index + 1}`}`;
+            button.onclick = (clickEvent) => {
+                clickEvent.preventDefault();
+                clickEvent.stopPropagation();
+                loadPreset(index);
+            };
+            menu.appendChild(button);
+        }
+    }
+
+    menu.style.visibility = "hidden";
+    document.body.appendChild(menu);
+
+    const placeMenu = () => {
+        const margin = 8;
+        const rect = menu.getBoundingClientRect();
+        let left = event.clientX;
+        let top = event.clientY;
+        if (left + rect.width + margin > window.innerWidth) {
+            left = Math.max(margin, window.innerWidth - rect.width - margin);
+        }
+        if (top + rect.height + margin > window.innerHeight) {
+            top = Math.max(margin, window.innerHeight - rect.height - margin);
+        }
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+        menu.style.visibility = "visible";
+    };
+    placeMenu();
+
+    const closeOnPointerDown = (pointerEvent) => {
+        if (menu.contains(pointerEvent.target) || anchor?.contains(pointerEvent.target)) return;
+        closePalettePresetMenu();
+    };
+    const closeOnEscape = (keyEvent) => {
+        if (keyEvent.key === "Escape") closePalettePresetMenu();
+    };
+    const closeOnContextMenu = (contextEvent) => {
+        if (menu.contains(contextEvent.target)) return;
+        closePalettePresetMenu();
+    };
+
+    document.addEventListener("pointerdown", closeOnPointerDown, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    document.addEventListener("contextmenu", closeOnContextMenu, true);
+    window.addEventListener("resize", closePalettePresetMenu, true);
+    window.addEventListener("scroll", closePalettePresetMenu, true);
+
+    _palettePresetMenuCleanup = () => {
+        document.removeEventListener("pointerdown", closeOnPointerDown, true);
+        document.removeEventListener("keydown", closeOnEscape, true);
+        document.removeEventListener("contextmenu", closeOnContextMenu, true);
+        window.removeEventListener("resize", closePalettePresetMenu, true);
+        window.removeEventListener("scroll", closePalettePresetMenu, true);
+        if (menu.parentElement) menu.parentElement.removeChild(menu);
+    };
+}
+
 function addInputButton() {
     if (document.getElementById("qig-input-btn")) return;
     if (getSettings().disablePaletteButton) return;
@@ -10615,9 +10885,10 @@ function addInputButton() {
     const btn = document.createElement("div");
     btn.id = "qig-input-btn";
     btn.className = "fa-solid fa-palette interactable";
-    btn.title = "Generate Image";
+    btn.title = "Generate Image (right-click for presets)";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
+        closePalettePresetMenu();
         const now = Date.now();
         if (isGenerating) {
             if (!requestGenerationCancel()) return;
@@ -10635,6 +10906,7 @@ function addInputButton() {
         if (mode === "inject") generateImageInjectPalette();
         else generateImage();
     };
+    btn.oncontextmenu = showPalettePresetMenu;
 
     // Add to left side area (away from send button)
     const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
@@ -10705,7 +10977,7 @@ async function generateImageInjectPalette() {
                 log("Using LLM Override for inject palette");
                 llmResponse = await callOverrideLLM(fullInstruction);
             } else {
-                llmResponse = await callInternalQuietPrompt(fullInstruction, {
+                llmResponse = await callInternalStandaloneLLM(fullInstruction, {
                     signal: currentAbortController?.signal,
                     quietName: `ImageGenInject_${timestamp}`,
                     label: "palette inject tag generation request",
@@ -11552,6 +11824,7 @@ jQuery(function () {
             getContext = extensionsModule.getContext;
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
             generateQuietPrompt = scriptModule.generateQuietPrompt;
+            generateRaw = scriptModule.generateRaw;
             getRequestHeaders = scriptModule.getRequestHeaders;
 
             try {
@@ -11628,6 +11901,7 @@ jQuery(function () {
                     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
                 }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
+                    closePalettePresetMenu();
                     if (_autoGenTimeout) {
                         clearTimeout(_autoGenTimeout);
                         _autoGenTimeout = null;

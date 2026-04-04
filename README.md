@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.5
+- Fixed LLM prompt `Prefill` so it now resolves macros like `{{char}}`, uses a standalone helper path with real prefill support when available, and no longer gets silently treated as a no-op.
+- Preserved meaningful name-based prefills instead of stripping them back out of the final prompt, helping character names survive into generated prompts for name-triggered contextual filters.
+- Added a right-click preset picker on the palette/QIG icon for quick preset switching without reopening the extension panel.
+
 ## What's New in v1.8.4
 - Fixed a continuous auto-generate loop when **Use LLM to create image prompt** was enabled and QIG's own helper LLM request was being treated like a fresh assistant reply.
 - Added an internal auto-generate suppression guard so prompt/tag helper requests no longer retrigger image generation.
