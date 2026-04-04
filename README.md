@@ -5,6 +5,9 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.14
+- Proxy/OpenAI-compatible generation now auto-detects pasted direct image URLs in prompt/chat text, converts them into structured `image_url` inputs, and removes the raw URL text from the outgoing prompt.
+
 ## What's New in v1.8.13
 - Added a new chat insert output mode with `Inline data URL` and `image_url (URL)` options for generated images.
 - `image_url` mode now auto-saves inserted images to the SillyTavern server when a provider only returned inline/base64 data, making URL-only vision consumers like Airdrop easier to feed automatically.

@@ -804,6 +804,107 @@ function isDataImageUrl(value) {
     return /^data:image\/[^;]+;base64,/i.test(String(value || "").trim());
 }
 
+function safeDecodeUrlComponent(value) {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
+function splitTrailingUrlPunctuation(value) {
+    const raw = String(value || "");
+    const match = raw.match(/[)\],.;!?]+$/);
+    if (!match) {
+        return { url: raw, trailing: "" };
+    }
+    return {
+        url: raw.slice(0, -match[0].length),
+        trailing: match[0],
+    };
+}
+
+function isLikelyDirectImageHttpUrl(value) {
+    const url = String(value || "").trim();
+    if (!isHttpUrl(url)) return false;
+    try {
+        const parsed = new URL(url);
+        const pathname = safeDecodeUrlComponent(parsed.pathname || "");
+        if (/\.(?:png|jpe?g|webp|gif|bmp|svg|avif|tiff?)$/i.test(pathname)) {
+            return true;
+        }
+
+        const query = parsed.search || "";
+        const formatMatch = query.match(/(?:^|[?&])(?:format|fm|ext)=([^&]+)/i);
+        if (formatMatch && /\b(?:png|jpe?g|webp|gif|bmp|svg|avif|tiff?)\b/i.test(safeDecodeUrlComponent(formatMatch[1]))) {
+            return true;
+        }
+
+        const mimeMatch = query.match(/(?:^|[?&])(?:mime|content[-_]?type)=([^&]+)/i);
+        if (mimeMatch && /^image\//i.test(safeDecodeUrlComponent(mimeMatch[1]))) {
+            return true;
+        }
+    } catch {
+        return false;
+    }
+    return false;
+}
+
+function normalizeExtractedProxyPromptText(value) {
+    return String(value || "")
+        .split("\n")
+        .map(line => line
+            .replace(/\s+([)\]}])/g, "$1")
+            .replace(/([([{])\s+/g, "$1")
+            .replace(/[ \t]{2,}/g, " ")
+            .trim())
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
+function extractPromptImageUrls(promptText, existingUrls = []) {
+    const source = typeof promptText === "string" ? promptText : "";
+    const seenUrls = new Set(
+        (existingUrls || [])
+            .map(url => String(url || "").trim())
+            .filter(Boolean)
+    );
+    const imageUrls = [];
+    const cleanedText = normalizeExtractedProxyPromptText(source.replace(/https?:\/\/[^\s<>"'`]+/gi, match => {
+        const { url, trailing } = splitTrailingUrlPunctuation(match);
+        if (!isLikelyDirectImageHttpUrl(url)) return match;
+        if (!seenUrls.has(url)) {
+            seenUrls.add(url);
+            imageUrls.push(url);
+        }
+        const preservedTrailing = trailing.replace(/[.,;!?]+/g, "");
+        return preservedTrailing || " ";
+    }));
+
+    return { imageUrls, cleanedText };
+}
+
+function getProxyPromptFallback(hasRefImages) {
+    return hasRefImages
+        ? "Create a new image that matches the provided reference image(s)."
+        : "Create a new image.";
+}
+
+function normalizeProxyPromptInputs(prompt, refImages = []) {
+    const extracted = extractPromptImageUrls(prompt, refImages);
+    const mergedRefImages = [...refImages, ...extracted.imageUrls];
+    if (extracted.imageUrls.length > 0) {
+        log(`Auto-detected ${extracted.imageUrls.length} direct image URL(s) in prompt text`);
+        extracted.imageUrls.forEach(img => log(`  prompt image URL: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""}`));
+    }
+    return {
+        promptText: extracted.cleanedText,
+        promptImageUrls: extracted.imageUrls,
+        refImages: mergedRefImages,
+    };
+}
+
 function normalizeProxyEndpointSetting(value) {
     return ["auto", "chat_completions", "images_generations"].includes(value) ? value : "auto";
 }
@@ -1014,22 +1115,25 @@ function buildProxyChatPayload(prompt, negative, s, refImages, payloadMode, prox
     const negPrompt = negative ? `\nAvoid: ${negative}` : "";
     const extraInstr = s.proxyExtraInstructions ? `\n${s.proxyExtraInstructions}` : "";
     const content = [];
-    const hasRefImages = refImages.length > 0;
+    const normalizedPrompt = normalizeProxyPromptInputs(prompt, refImages);
+    const allRefImages = normalizedPrompt.refImages;
+    const hasRefImages = allRefImages.length > 0;
+    const promptText = normalizedPrompt.promptText || getProxyPromptFallback(hasRefImages);
 
     if (hasRefImages) {
-        log(`Attaching ${refImages.length} reference image(s) to chat request`);
-        for (const img of refImages) {
+        log(`Attaching ${allRefImages.length} reference image(s) to chat request`);
+        for (const img of allRefImages) {
             log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`);
             content.push({ type: "image_url", image_url: { url: img } });
         }
     } else {
-        log("No reference images found in proxyRefImages");
+        log("No reference images found in proxyRefImages or prompt text");
     }
 
-    const refPrefix = hasRefImages
-        ? "Look at the reference image(s) provided. Match their style, composition, and visual characteristics. Generate a new image: "
-        : "Generate an image: ";
-    content.push({ type: "text", text: `${refPrefix}${prompt}${negPrompt}${extraInstr}` });
+    const textPrompt = hasRefImages
+        ? `Look at the reference image(s) provided. Match their style, composition, and visual characteristics. ${promptText}`
+        : `Generate an image: ${promptText}`;
+    content.push({ type: "text", text: `${textPrompt}${negPrompt}${extraInstr}` });
 
     const payload = {
         model: s.proxyModel,
@@ -1059,9 +1163,12 @@ function buildProxyChatPayload(prompt, negative, s, refImages, payloadMode, prox
 }
 
 function buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, proxySeed, sseEnabled) {
+    const normalizedPrompt = normalizeProxyPromptInputs(prompt, refImages);
+    const allRefImages = normalizedPrompt.refImages;
+    const promptText = normalizedPrompt.promptText || getProxyPromptFallback(allRefImages.length > 0);
     const strictPrompt = payloadMode === "openai_strict"
-        ? [prompt, negative ? `Avoid: ${negative}` : "", s.proxyExtraInstructions || ""].filter(Boolean).join("\n")
-        : prompt;
+        ? [promptText, negative ? `Avoid: ${negative}` : "", s.proxyExtraInstructions || ""].filter(Boolean).join("\n")
+        : promptText;
     const payload = {
         model: s.proxyModel,
         prompt: strictPrompt,
@@ -1082,15 +1189,15 @@ function buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, pr
         payload.facefix = s.proxyFacefix || undefined;
     }
 
-    if (refImages.length > 0) {
-        log(`Attaching ${refImages.length} reference image(s) to images/generations request`);
-        refImages.forEach(img => log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`));
+    if (allRefImages.length > 0) {
+        log(`Attaching ${allRefImages.length} reference image(s) to images/generations request`);
+        allRefImages.forEach(img => log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`));
         // OpenAI-compatible image proxies are inconsistent here:
         // Airforce's own image playground posts `image_urls`, while some other
         // proxy stacks still look for the older `image` field.
-        payload.image_urls = refImages;
+        payload.image_urls = allRefImages;
         if (payloadMode !== "openai_strict") {
-            payload.image = refImages;
+            payload.image = allRefImages;
         }
         log(`Proxy ref payload fields: ${payloadMode === "openai_strict" ? "image_urls" : "image_urls, image"}`);
     }
