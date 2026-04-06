@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.21
+- Fixed custom LLM instruction mode so selected scene text is still sent when a custom prompt forgets to include `{{scene}}`.
+- Added a compatibility fallback that auto-appends the selected scene in custom mode instead of silently generating from card/profile context alone.
+- Added clearer debug logging when that custom-instruction scene fallback is used.
+
 ## What's New in v1.8.20
 - Fixed helper-LLM scene extraction so image prompt generation can read the selected chat message more reliably again, including chats where the visible text lives outside plain `mes`.
 - Adjusted multi-message scene formatting/instructions so the helper is less likely to echo the chat transcript back instead of turning it into an image prompt.

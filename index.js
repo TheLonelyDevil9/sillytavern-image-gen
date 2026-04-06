@@ -753,6 +753,14 @@ function isSceneTranscriptPrompt(text) {
     return blocks.every(block => /^[^:\n]{1,80}:\s+\S/.test(block));
 }
 
+function customInstructionHasMacro(template, macroName) {
+    const source = String(template || "");
+    const macro = String(macroName || "").trim();
+    if (!macro) return false;
+    const escaped = macro.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "i").test(source);
+}
+
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
@@ -4223,6 +4231,10 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             instruction += `${identityRequirementBlock}${subjectPriorityBlock}`;
             if (exactNameRequirement || exactUserRequirement) {
                 instruction += `\n\nNAME REQUIREMENTS:${exactNameRequirement}${exactUserRequirement}`;
+            }
+            if (!customInstructionHasMacro(s.llmCustomInstruction, "scene")) {
+                log("Custom instruction missing {{scene}} placeholder; appending selected scene automatically");
+                instruction += `\n\n${isMultiMessage ? "SELECTED SCENE CONTEXT" : "SELECTED SCENE"}:\n${basePrompt}`;
             }
         } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
