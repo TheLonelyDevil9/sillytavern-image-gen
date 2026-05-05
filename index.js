@@ -149,6 +149,7 @@ const defaultSettings = {
     proxyPayloadMode: "extended",
     proxyRefImageMode: "auto",
     proxySse: "auto",
+    proxyTimeout: 600,
     proxyComfyMode: false,
     proxyComfyTimeout: 300,
     proxyComfyNodeId: "",
@@ -928,7 +929,7 @@ const PROVIDER_KEYS = {
     together: ["togetherKey", "togetherModel"],
     zai: ["zaiKey", "zaiModel", "zaiQuality"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
 
 const PROVIDERS = {
@@ -5901,7 +5902,8 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
 
     const controller = new AbortController();
     let timedOut = false;
-    const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 120000);
+    const proxyTimeoutSeconds = Math.max(30, Math.min(1800, parseIntOr(s.proxyTimeout, 600)));
+    const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, proxyTimeoutSeconds * 1000);
     if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
 
     let res;
@@ -5918,7 +5920,7 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
         });
     } catch (e) {
         if (e.name === "AbortError" && timedOut && !signal?.aborted) {
-            throw new Error("Proxy request timed out after 120 seconds");
+            throw new Error(`Proxy request timed out after ${proxyTimeoutSeconds} seconds`);
         }
         throw e;
     } finally {
@@ -9850,7 +9852,7 @@ function refreshProviderInputs(provider) {
             ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
             ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
-        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-timeout", "proxyTimeout"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -10653,6 +10655,9 @@ function createUI() {
                     <div id="qig-proxy-standard-opts" style="display:${s.proxyComfyMode ? "none" : "block"}">
                     <label>Model</label>
                     <input id="qig-proxy-model" type="text" value="${esc(s.proxyModel)}" placeholder="PixAI model ID">
+                    <label>Request Timeout (seconds)</label>
+                    <input id="qig-proxy-timeout" type="number" value="${esc(s.proxyTimeout || 600)}" min="30" max="1800">
+                    <small style="opacity:0.6;font-size:10px;">Some image proxies keep long jobs open. Use 600 for Link-style slow image generations.</small>
                     <div class="qig-row">
                         <div><label>Endpoint Mode</label>
                             <select id="qig-proxy-endpoint-mode">
@@ -11400,6 +11405,7 @@ function createUI() {
     bind("qig-proxy-url", "proxyUrl", () => updateProxyCompatibilityUI());
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
+    bind("qig-proxy-timeout", "proxyTimeout", true);
     bind("qig-proxy-endpoint-mode", "proxyEndpointMode", () => updateProxyCompatibilityUI());
     bind("qig-proxy-payload-mode", "proxyPayloadMode", () => updateProxyCompatibilityUI());
     bind("qig-proxy-ref-mode", "proxyRefImageMode", () => {

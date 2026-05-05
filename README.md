@@ -7,7 +7,10 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.3
+## What's New in v2.0.4
+- Reverse Proxy requests now have a configurable `Request Timeout` setting, defaulting to 600 seconds for slower image services like LinkAPI.
+
+## Recent v2.0.3 Fixes
 - Added `Plain Description` generation: type a natural-language image idea and QIG will ask your AI to turn it into an image prompt before generating.
 - Added ComfyUI workflow variable documentation in [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md).
 - Custom ComfyUI workflow placeholders now preserve numeric types when a node input is exactly a placeholder such as `%seed%`, `%width%`, or `%cfg%`.
