@@ -7,11 +7,19 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.1
-- Fixed inject auto-insert targeting so auto-generated images attach to the latest relevant AI message instead of getting stuck on the greeting/first message.
-- Added `Xiaolong` to the Pollinations model suggestions.
-- Added current Pollinations paid support with optional API key entry and safer authenticated generation for paid models.
-- Pollinations model selection now accepts typed custom model IDs instead of being limited to a small hardcoded dropdown.
+## What's New in v2.0.3
+- Added `Plain Description` generation: type a natural-language image idea and QIG will ask your AI to turn it into an image prompt before generating.
+- Added ComfyUI workflow variable documentation in [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md).
+- Custom ComfyUI workflow placeholders now preserve numeric types when a node input is exactly a placeholder such as `%seed%`, `%width%`, or `%cfg%`.
+- Runtime ComfyUI JSON errors are no longer mislabeled as invalid custom workflow JSON.
+
+## Recent v2.0.2 Fixes
+- Restored the palette button Direct / Inject mode option.
+- Inject palette ignores stale tags from older messages when a newer user message exists.
+- If there is no current image tag, Inject asks the LLM for one from the selected scene instead of targeting old chat content.
+- Contextual filters now match the selected scene again, so global/card filters fire properly.
+- Saved card/character filters can be edited, deleted, toggled, and reordered from the manager without switching to that card/character.
+- Loading generation presets no longer overwrites or moves contextual filters.
 
 ## Features
 
@@ -33,6 +41,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 ### Generation
 - 40+ style presets
 - Manual prompt generation
+- Plain-description-to-prompt generation
 - Message-based scene selection
 - LLM prompt generation with optional prompt editing
 - Prompt wildcards
@@ -70,6 +79,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 ### Prompt & Presets
 - `Prompt`: Base prompt with `{{char}}` and `{{user}}` placeholders.
+- `Plain Description`: Type a quick natural-language idea and generate from an AI-converted image prompt without changing the saved prompt field.
 - `Negative Prompt`: What to avoid.
 - `Quality Tags`: Optional tags prepended to prompts.
 - `Use chat message`: Use selected chat messages as scene context.
@@ -147,6 +157,7 @@ For ComfyUI:
 - Start ComfyUI with CORS enabled.
 - Use API-format workflow JSON for custom workflows.
 - Use `%reference_image%` in custom workflows when needed.
+- See [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder list and typed-value behavior.
 
 ## Credits
 

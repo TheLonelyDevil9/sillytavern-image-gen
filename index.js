@@ -5263,8 +5263,14 @@ async function genLocal(prompt, negative, s, signal) {
 
         // Check for custom workflow JSON
         if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
+            let customWorkflow = null;
             try {
-                let customWorkflow = JSON.parse(s.comfyWorkflow);
+                customWorkflow = JSON.parse(s.comfyWorkflow);
+            } catch (e) {
+                log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
+            }
+
+            if (customWorkflow && typeof customWorkflow === "object" && !Array.isArray(customWorkflow)) {
 
                 // Upload reference image for %reference_image% placeholder
                 let uploadedRefName = '';
@@ -5308,10 +5314,29 @@ async function genLocal(prompt, negative, s, signal) {
                     '%model%': s.localModel || 'model.safetensors',
                     '%reference_image%': uploadedRefName
                 };
+                const typedReplacements = {
+                    '%prompt%': prompt,
+                    '%negative%': negative,
+                    '%seed%': seed,
+                    '%width%': Number(s.width),
+                    '%height%': Number(s.height),
+                    '%steps%': Number(s.steps),
+                    '%cfg%': Number(s.cfgScale),
+                    '%denoise%': denoise,
+                    '%clip_skip%': clipSkip,
+                    '%sampler%': samplerName,
+                    '%scheduler%': schedulerName,
+                    '%model%': s.localModel || 'model.safetensors',
+                    '%reference_image%': uploadedRefName
+                };
 
                 const replaceInObj = (obj) => {
                     for (const key in obj) {
                         if (typeof obj[key] === 'string') {
+                            if (Object.prototype.hasOwnProperty.call(typedReplacements, obj[key])) {
+                                obj[key] = typedReplacements[obj[key]];
+                                continue;
+                            }
                             for (const [placeholder, value] of Object.entries(replacements)) {
                                 obj[key] = obj[key].split(placeholder).join(value);
                             }
@@ -5339,13 +5364,8 @@ async function genLocal(prompt, negative, s, signal) {
 
                 const promptId = data.prompt_id;
                 return await waitForComfyImage(promptId);
-            } catch (e) {
-                if (e instanceof SyntaxError) {
-                    log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
-                } else {
-                    throw e;
-                }
             }
+            if (customWorkflow) log("ComfyUI: Workflow JSON must be an API-format object, using default");
         }
 
         function checkComfyResult(result) {
@@ -7031,6 +7051,76 @@ function showPromptEditDialog(prompt) {
                 }
             };
         });
+    });
+}
+
+function showPlainDescriptionDialog() {
+    return new Promise((resolve) => {
+        const s = getSettings();
+        const popup = createPopup("qig-plain-description-popup", "Generate From Plain Description", `
+            <div class="qig-popup-form" style="padding:16px;min-width:min(640px,90vw);">
+                <label for="qig-plain-description-text">Description</label>
+                <textarea id="qig-plain-description-text" rows="8" placeholder="Describe the image in plain language. QIG will ask your AI to turn this into an image prompt."></textarea>
+                <div class="qig-form-grid" style="margin-top:12px;">
+                    <div class="qig-form-field">
+                        <label for="qig-plain-description-style">Prompt Style</label>
+                        <select id="qig-plain-description-style">
+                            <option value="tags" ${s.llmPromptStyle === "tags" ? "selected" : ""}>Danbooru Tags (anime)</option>
+                            <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description</option>
+                            <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
+                        </select>
+                    </div>
+                    <div class="qig-form-field" style="justify-content:end;">
+                        <label class="checkbox_label">
+                            <input id="qig-plain-description-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
+                            <span>Edit AI prompt before generation</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="qig-dialog-actions" style="margin-top:14px;">
+                    <button id="qig-plain-description-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-plain-description-generate" class="menu_button">Generate</button>
+                </div>
+            </div>`, (popup) => {
+            const textEl = document.getElementById("qig-plain-description-text");
+            const styleEl = document.getElementById("qig-plain-description-style");
+            const editEl = document.getElementById("qig-plain-description-edit");
+
+            const close = () => {
+                popup.style.display = "none";
+                resolve(null);
+            };
+            const use = () => {
+                const description = textEl.value.trim();
+                if (!description) {
+                    toastr.warning("Enter a plain text description first");
+                    textEl.focus();
+                    return;
+                }
+                popup.style.display = "none";
+                resolve({
+                    description,
+                    promptStyle: styleEl.value || "tags",
+                    editPrompt: !!editEl.checked,
+                });
+            };
+
+            document.getElementById("qig-plain-description-cancel").onclick = close;
+            document.getElementById("qig-plain-description-generate").onclick = use;
+            bindPopupDismiss(popup, close);
+
+            textEl.focus();
+            textEl.onkeydown = (e) => {
+                if (e.key === "Enter" && e.ctrlKey) {
+                    e.preventDefault();
+                    use();
+                }
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            };
+        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
     });
 }
 
@@ -10636,6 +10726,7 @@ function createUI() {
                         <label>Prompt</label>
                         <textarea id="qig-prompt" rows="2">${esc(s.prompt)}</textarea>
                         <div style="display:flex;gap:4px;margin:4px 0;">
+                            <button id="qig-plain-desc-btn" class="menu_button" style="padding:2px 8px;font-size:11px;" title="Write a plain-language image description and let the AI turn it into a prompt">✨ Plain Description</button>
                             <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;" title="Save all generation settings (prompt, negative, size, steps, etc.) as a preset">💾 Save Preset</button>
                             <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
                             <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
@@ -10904,6 +10995,7 @@ function createUI() {
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
+    document.getElementById("qig-plain-desc-btn").onclick = generateImageFromPlainDescription;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
@@ -12189,6 +12281,142 @@ async function generateImageInjectPalette() {
         }
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
+    }
+}
+
+async function generateImageFromPlainDescription() {
+    if (isGenerating) return;
+
+    const request = await showPlainDescriptionDialog();
+    if (!request) return;
+    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+
+    beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
+    const baseSettings = getSettings();
+    const s = {
+        ...baseSettings,
+        useLastMessage: false,
+        useLLMPrompt: true,
+        llmPromptStyle: request.promptStyle || baseSettings.llmPromptStyle || "tags",
+    };
+    const cancelCheckpoint = getCancelCheckpoint();
+    const originalSeed = getGenerationSeedValue(s);
+    const basePrompt = request.description;
+
+    try {
+        checkAborted(cancelCheckpoint);
+        lastGenerationSourceMessageIndex = null;
+        lastProxyContextRefImages = [];
+        log(`Plain description: Generating AI prompt from ${basePrompt.length} chars`);
+        showStatus("🤖 Turning description into image prompt...");
+
+        let prompt = await generateLLMPrompt(s, basePrompt, currentAbortController?.signal, {
+            isMultiMessageScene: false,
+        });
+        checkAborted(cancelCheckpoint);
+        lastPromptWasLLM = prompt !== basePrompt;
+
+        if (request.editPrompt) {
+            const editedPrompt = await showPromptEditDialog(prompt);
+            if (editedPrompt !== null) {
+                prompt = editedPrompt;
+            } else {
+                return;
+            }
+        }
+
+        prompt = applyStyle(prompt, s);
+
+        if (s.appendQuality && s.qualityTags) {
+            prompt = `${s.qualityTags}, ${prompt}`;
+        }
+        let negative = resolvePrompt(s.negativePrompt);
+
+        if (s.useSTStyle !== false) {
+            const stStyle = getSTStyleSettings();
+            if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+            if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+            if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+            if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+        }
+
+        const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+            matchText: [basePrompt, prompt].filter(Boolean).join("\n\n"),
+            llmSceneText: basePrompt,
+            signal: currentAbortController?.signal,
+        });
+        checkAborted(cancelCheckpoint);
+        prompt = contextualApplied.prompt;
+        negative = contextualApplied.negative;
+
+        lastPrompt = prompt;
+        lastNegative = negative;
+        promptHistory.unshift({ prompt, negative, time: new Date().toLocaleTimeString() });
+        if (promptHistory.length > 50) promptHistory.pop();
+        savePromptHistory();
+
+        const batchCount = s.batchCount || 1;
+        const results = [];
+        const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
+        const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+
+        log(`Plain description final prompt: ${prompt.substring(0, 100)}...`);
+        for (let i = 0; i < batchCount; i++) {
+            checkAborted(cancelCheckpoint);
+            setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
+            showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
+            const expandedPrompt = expandWildcards(prompt);
+            const expandedNegative = expandWildcards(negative);
+            const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+            if (result) {
+                const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, {
+                    promptWasLLM: lastPromptWasLLM,
+                });
+                if (entry) results.push(entry);
+            }
+        }
+
+        if (results.length > 0 && s.autoInsert) {
+            const ctx = getContext();
+            const chat = ctx?.chat;
+            const lastCharIdx = (() => {
+                if (!chat) return undefined;
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    if (!chat[i]?.is_user) return i;
+                }
+                return undefined;
+            })();
+            for (const r of results) {
+                addToGallery(r);
+                try {
+                    if (s.insertAsHiddenReply) {
+                        await insertImageAsHiddenReply(r);
+                    } else {
+                        await insertImageIntoMessage(r, lastCharIdx);
+                    }
+                } catch (err) {
+                    console.error("[Quick Image Gen] Auto-insert failed:", err);
+                }
+            }
+            toastr.success(`Image${results.length > 1 ? "s" : ""} inserted into chat`);
+        } else if (results.length === 1) {
+            displayImage(results[0]);
+        } else if (results.length > 1) {
+            displayBatchResults(results);
+        }
+    } catch (e) {
+        if (e.name === "AbortError") {
+            log("Plain description generation cancelled by user");
+            toastr.info("Generation cancelled");
+        } else {
+            log(`Plain description error: ${e.message}`);
+            toastr.error("Plain description generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        }
+    } finally {
+        setGenerationSeedValue(s, originalSeed);
+        endGeneration({ disableGenerateButton: true });
+        clearStyleCache();
+        log("Plain description: Cleared caches after generation");
     }
 }
 
